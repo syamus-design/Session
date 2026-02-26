@@ -4,4 +4,6 @@ pydantic==2.5.0
 python-dotenv==1.0.0
 boto3==1.29.7
 requests==2.31.0
+beautifulsoup4==4.12.2
+prometheus-client==0.21.0
 aiohttp==3.9.0

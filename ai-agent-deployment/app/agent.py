@@ -14,13 +14,23 @@ import uvicorn
 from datetime import datetime
 import requests
 import re
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+import time as _time
+from prometheus_client import (
+    Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 )
-logger = logging.getLogger(__name__)
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import Response as StarletteResponse
+
+# Configure logging – explicitly add a StreamHandler so that uvicorn's
+# dictConfig cannot silently disable our application-level logs.
+logger = logging.getLogger("ai-agent")
+logger.setLevel(logging.INFO)
+logger.propagate = False  # we manage our own handlers
+
+_console = logging.StreamHandler()
+_console.setLevel(logging.INFO)
+_console.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+logger.addHandler(_console)
 
 
 class SplunkHECHandler(logging.Handler):
@@ -56,10 +66,11 @@ class SplunkHECHandler(logging.Handler):
             "Content-Type": "application/json",
         }
         try:
-            requests.post(self.url, json=payload, headers=headers, timeout=2, verify=False)
-        except Exception:
-            # don't raise from logging
-            pass
+            resp = requests.post(self.url, json=payload, headers=headers, timeout=2, verify=False)
+            if resp.status_code != 200:
+                print(f"[SplunkHEC] Non-200 response: {resp.status_code} {resp.text}", flush=True)
+        except Exception as exc:
+            print(f"[SplunkHEC] Failed to send log: {exc}", flush=True)
 
 
 # configure splunk logging handler if environment variables present
@@ -80,6 +91,9 @@ if splunk_url and splunk_token:
     formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     spl_handler.setFormatter(formatter)
     logger.addHandler(spl_handler)
+    print(f"[SplunkHEC] Handler attached -> {spl_handler.url}", flush=True)
+else:
+    print("[SplunkHEC] Skipped – SPLUNK_HEC_URL or SPLUNK_HEC_TOKEN not set", flush=True)
 
 app = FastAPI(title="AI Agent API", version="1.0.0")
 
@@ -91,6 +105,70 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics
+# ---------------------------------------------------------------------------
+REQUEST_COUNT = Counter(
+    "ai_agent_requests_total",
+    "Total HTTP requests",
+    ["method", "endpoint", "status"]
+)
+REQUEST_LATENCY = Histogram(
+    "ai_agent_request_duration_seconds",
+    "Request latency in seconds",
+    ["method", "endpoint"],
+    buckets=[0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120]
+)
+CHAT_COUNT = Counter(
+    "ai_agent_chat_total",
+    "Total chat messages processed",
+    ["question_type"]
+)
+CHAT_LATENCY = Histogram(
+    "ai_agent_chat_duration_seconds",
+    "Chat response latency in seconds",
+    ["question_type", "model"],
+    buckets=[1, 2, 5, 10, 20, 40, 60, 90, 120]
+)
+OLLAMA_ERRORS = Counter(
+    "ai_agent_ollama_errors_total",
+    "Ollama call errors",
+    ["error_type"]
+)
+ACTIVE_REQUESTS = Gauge(
+    "ai_agent_active_requests",
+    "Currently in-flight requests"
+)
+
+
+@app.middleware("http")
+async def prometheus_middleware(request: StarletteRequest, call_next):
+    """Track per-request latency and counts."""
+    if request.url.path == "/metrics":
+        return await call_next(request)
+    ACTIVE_REQUESTS.inc()
+    start = _time.perf_counter()
+    response = None
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        elapsed = _time.perf_counter() - start
+        status = response.status_code if response else 500
+        endpoint = request.url.path
+        REQUEST_COUNT.labels(request.method, endpoint, status).inc()
+        REQUEST_LATENCY.labels(request.method, endpoint).observe(elapsed)
+        ACTIVE_REQUESTS.dec()
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics endpoint."""
+    return StarletteResponse(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST
+    )
 
 
 class AgentRequest(BaseModel):
@@ -151,10 +229,15 @@ async def process_message(request: AgentRequest) -> AgentResponse:
 @app.post("/chat")
 async def chat(request: AgentRequest) -> AgentResponse:
     """Chat endpoint for conversational AI"""
+    qtype = detect_question_type(request.message)
+    CHAT_COUNT.labels(question_type=qtype).inc()
+    start = _time.perf_counter()
     try:
         logger.info(f"Chat message: {request.message}")
         response = simulate_ai_processing(request.message, request.context)
-        
+        elapsed = _time.perf_counter() - start
+        model = "deepseek-coder" if qtype == "technical" else "phi"
+        CHAT_LATENCY.labels(question_type=qtype, model=model).observe(elapsed)
         return AgentResponse(
             response=response,
             timestamp=datetime.utcnow().isoformat(),
@@ -168,67 +251,155 @@ async def chat(request: AgentRequest) -> AgentResponse:
         )
 
 
+# ---------------------------------------------------------------------------
+# Static majors dataset (extracted from undergrad.osu.edu Feb 2026)
+# ---------------------------------------------------------------------------
+OSU_MAJORS = [
+    "Accounting", "Actuarial Science", "Aerospace Engineering",
+    "African American and African Studies", "Agribusiness",
+    "Agribusiness and Applied Economics", "Agricultural Communication",
+    "Agricultural Systems Management", "Agriscience Education", "Agronomy",
+    "Ancient History and Classics", "Animal Sciences",
+    "Anthropological Sciences", "Anthropology", "Arabic", "Architecture",
+    "Art", "Art Education", "Arts Management",
+    "Astronomy and Astrophysics", "Atmospheric Sciences", "Aviation",
+    "Aviation Management", "Biochemistry", "Biology",
+    "Biomedical Engineering", "Biomedical Science",
+    "Business Administration", "Business Management",
+    "Chemical Engineering", "Chemistry", "Child and Youth Studies",
+    "Chinese", "City and Regional Planning", "Civil Engineering",
+    "Classics", "Communication", "Community Leadership",
+    "Comparative Studies", "Computer and Information Science",
+    "Computer Science and Engineering", "Construction Systems Management",
+    "Consumer and Family Financial Services",
+    "Criminology and Criminal Justice Studies", "Dance", "Data Analytics",
+    "Dental Hygiene", "Earth Sciences", "Economics",
+    "Economics - Business",
+    "Education - Integrated Language Arts/English Education",
+    "Education - Middle Childhood Education",
+    "Education - Primary Education",
+    "Education - Science and Mathematics Education",
+    "Education - Special Education",
+    "Education - Teaching English to Speakers of Other Languages",
+    "Education - Technical Education and Training",
+    "Education - World Language Education",
+    "Electrical and Computer Engineering", "Engineering Physics",
+    "Engineering Technology", "English", "Entomology",
+    "Environment and Natural Resources",
+    "Environment, Economy, Development and Sustainability",
+    "Environmental Engineering", "Environmental Policy and Decision Making",
+    "Environmental Science", "Evolution and Ecology",
+    "Exercise Science Education", "Experiential Media Design",
+    "Fashion and Retail Studies", "Film Studies", "Finance",
+    "Food Business Management", "Food Science and Technology",
+    "Food, Agricultural and Biological Engineering",
+    "Forensic Anthropology", "Forestry, Fisheries and Wildlife",
+    "French", "French and Francophone Studies",
+    "Geographic Information Science", "Geography", "German",
+    "Health and Rehabilitation Sciences",
+    "Health Information Management and Systems",
+    "Health Promotion, Nutrition and Exercise Science",
+    "Health Sciences", "Hebrew and Jewish Studies", "History",
+    "History of Art", "Horticulture and Crop Science",
+    "Hospitality Management", "Human Development and Family Science",
+    "Human Nutrition", "Human Resources",
+    "Industrial and Systems Engineering", "Industrial Design",
+    "Information Systems", "Interior Design", "International Business",
+    "International Studies", "Islamic Studies", "Italian",
+    "Italian Studies", "Japanese", "Journalism", "Korean",
+    "Landscape Architecture", "Leadership", "Linguistics",
+    "Logistics Management", "Marketing",
+    "Materials Science and Engineering", "Mathematics",
+    "Mechanical Engineering", "Medical Anthropology",
+    "Medical Laboratory Science", "Microbiology", "Modern Greek",
+    "Molecular Genetics", "Moving-Image Production", "Music",
+    "Music - Composition", "Music - Education", "Music - Jazz Studies",
+    "Music - Performance (orchestral instruments)",
+    "Music - Performance (piano)", "Music - Performance (voice)",
+    "Natural Resource Management", "Neuroscience", "Nursing",
+    "Occupational Therapy", "Operations Management",
+    "Pharmaceutical Sciences", "Philosophy",
+    "Philosophy, Politics and Economics", "Physical Therapy", "Physics",
+    "Plant Pathology", "Political Science", "Portuguese",
+    "Pre-Dentistry", "Pre-Law", "Pre-Medicine", "Pre-Optometry",
+    "Pre-Pharmacy", "Pre-Veterinary Medicine",
+    "Professional Golf Management", "Psychology", "Public Health",
+    "Public Management, Leadership and Policy", "Public Policy Analysis",
+    "Radiologic Sciences and Therapy", "Real Estate and Urban Analysis",
+    "Religious Studies", "Respiratory Therapy", "Romance Studies",
+    "Russian", "Social Sciences Air Transportation", "Social Work",
+    "Sociology", "Spanish", "Speech and Hearing Science",
+    "Sport Industry", "Statistics", "Theatre", "Vision Science",
+    "Visual Communication Design", "Welding Engineering",
+    "Women's, Gender and Sexuality Studies", "World Literatures",
+    "World Politics", "Zoology",
+]
+
+
 def get_osu_context() -> str:
-    """Get OSU-specific context for the AI agent (legacy wrapper).
+    """Get OSU-specific context for the AI agent.
 
-    This function remains for backward compatibility and calls the
-    dynamic builder with no live majors.
+    Uses the embedded static majors list as the default, and still
+    attempts a live fetch via fetch_osu_majors() which can override
+    the list when the external site is reachable.
     """
-    return build_osu_context()
+    # Try live scrape first; fall back to the static list
+    try:
+        live = fetch_osu_majors()
+        if live and len(live) > 10:
+            return build_osu_context(live)
+    except Exception:
+        pass
+    return build_osu_context(OSU_MAJORS)
 
 
-def fetch_osu_majors(source_url: Optional[str] = None, max_items: int = 12, timeout: int = 6) -> list:
+def fetch_osu_majors(source_url: Optional[str] = None, max_items: int = 80, timeout: int = 8) -> list:
     """Fetch and parse OSU majors from the undergraduate majors page.
 
-    Attempts to use BeautifulSoup when available; falls back to a regex-based
-    parser if bs4 isn't installed or parsing fails. Returns a list of major
-    names (may be empty on failure).
+    Targets links whose href matches /majors-and-academics/majors/detail/.
+    Uses BeautifulSoup when available; falls back to regex. Returns a
+    deduplicated list of major names (may be empty on failure).
     """
     url = source_url or "https://undergrad.osu.edu/majors-and-academics/majors"
+    detail_pattern = "/majors-and-academics/majors/detail/"
+
     try:
-        resp = requests.get(url, timeout=timeout)
+        resp = requests.get(url, timeout=timeout, headers={
+            "User-Agent": "OSU-AI-Agent/1.0 (internal assistant)"
+        })
         resp.raise_for_status()
         html = resp.text
 
-        # Prefer BeautifulSoup if installed
+        majors: list = []
+        seen: set = set()
+
+        def _add(name: str):
+            name = name.strip()
+            if name and name not in seen and len(name) >= 3:
+                seen.add(name)
+                majors.append(name)
+
+        # --- BeautifulSoup path (preferred) ---
         try:
             from bs4 import BeautifulSoup
             soup = BeautifulSoup(html, "html.parser")
-            # Collect candidate anchor texts
-            anchors = soup.find_all('a')
-            majors = []
-            for a in anchors:
-                text = a.get_text(strip=True)
-                href = (a.get('href') or "").lower()
-                if not text or len(text) < 3:
-                    continue
-                # Heuristic: link text that contains 'major' or points to a major
-                if 'major' in href or 'major' in text.lower() or '/majors' in href:
-                    majors.append(text)
-            # Deduplicate preserving order
-            seen = set()
-            majors = [m for m in majors if not (m in seen or seen.add(m))]
+            for a in soup.find_all("a", href=True):
+                if detail_pattern in a["href"]:
+                    _add(a.get_text(strip=True))
             if majors:
                 return majors[:max_items]
         except Exception:
-            # fall through to regex fallback
-            pass
+            pass  # fall through to regex
 
-        # Regex fallback: capture common link/text patterns
-        candidates = re.findall(r">([^<>]{3,80})</a>", html)
-        cleaned = []
-        seen = set()
-        for c in candidates:
-            t = re.sub(r"\s+", " ", c).strip()
-            if len(t) < 3:
-                continue
-            if t in seen:
-                continue
-            seen.add(t)
-            cleaned.append(t)
-            if len(cleaned) >= max_items:
+        # --- Regex fallback ---
+        # Match: href="…/majors/detail/…">Major Name</a>
+        pattern = r'href="[^"]*' + re.escape(detail_pattern) + r'[^"]*"[^>]*>([^<]{3,120})</a>'
+        for m in re.finditer(pattern, html):
+            _add(re.sub(r"\s+", " ", m.group(1)))
+            if len(majors) >= max_items:
                 break
-        return cleaned
+
+        return majors
     except Exception as e:
         logger.warning(f"Failed to fetch OSU majors from {url}: {e}")
         return []
@@ -237,8 +408,10 @@ def fetch_osu_majors(source_url: Optional[str] = None, max_items: int = 12, time
 def build_osu_context(majors_list: Optional[list] = None) -> str:
     """Build the OSU context string, optionally inserting a live majors list."""
     if majors_list and len(majors_list) > 0:
-        majors_summary = ', '.join(majors_list[:8])
-        majors_line = f"Popular majors (sample): {majors_summary}. Full list: https://undergrad.osu.edu/majors-and-academics/majors"
+        total = len(majors_list)
+        sample = ', '.join(majors_list[:20])
+        majors_line = (f"OSU offers {total}+ undergraduate majors including: {sample}."
+                       f"\nFull list: https://undergrad.osu.edu/majors-and-academics/majors")
     else:
         majors_line = "Popular majors: Computer Science, Engineering, Business, Nursing, Psychology, Biology, Communications. Browse all at: https://undergrad.osu.edu/majors-and-academics/majors"
 
@@ -329,13 +502,7 @@ def simulate_ai_processing(message: str, context: Optional[dict] = None) -> str:
     enhanced_context = context or {}
     
     if question_type == "osu":
-        # Try to fetch live majors and inject into the OSU system prompt.
-        try:
-            majors = fetch_osu_majors()
-            enhanced_context['system_prompt'] = build_osu_context(majors)
-        except Exception:
-            # Fallback to static context if live fetch fails
-            enhanced_context['system_prompt'] = get_osu_context()
+        enhanced_context['system_prompt'] = get_osu_context()
         enhanced_context['question_type'] = 'osu'
     elif question_type == "technical":
         enhanced_context['system_prompt'] = get_code_context()
@@ -397,10 +564,12 @@ def process_with_ollama(message: str, context: Optional[dict] = None) -> str:
         return ollama_response
         
     except requests.exceptions.ConnectionError:
+        OLLAMA_ERRORS.labels(error_type="connection").inc()
         error_msg = f"Cannot connect to Ollama at {os.getenv('OLLAMA_URL', 'http://localhost:11434')}. Is it running?"
         logger.error(error_msg)
         raise HTTPException(status_code=503, detail=error_msg)
     except requests.exceptions.Timeout:
+        OLLAMA_ERRORS.labels(error_type="timeout").inc()
         error_msg = f"Model response timed out. Try a simpler question."
         logger.error(error_msg)
         raise HTTPException(status_code=504, detail=error_msg)

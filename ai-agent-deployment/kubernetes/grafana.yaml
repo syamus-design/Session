@@ -1,0 +1,294 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: ai-agent
+  labels:
+    app: grafana
+data:
+  datasource.yml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+        editable: true
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: ai-agent
+  labels:
+    app: grafana
+data:
+  dashboard-provider.yml: |
+    apiVersion: 1
+    providers:
+      - name: 'ai-agent-dashboards'
+        orgId: 1
+        folder: 'AI Agent'
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: ai-agent
+  labels:
+    app: grafana
+data:
+  ai-agent-overview.json: |
+    {
+      "uid": "ai-agent-overview",
+      "title": "AI Agent - Overview",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "10s",
+      "time": {"from": "now-30m", "to": "now"},
+      "panels": [
+        {
+          "type": "stat",
+          "title": "Total Requests",
+          "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+          "targets": [{"expr": "sum(ai_agent_requests_total)", "legendFormat": "total"}],
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}]}}}
+        },
+        {
+          "type": "stat",
+          "title": "Total Chats",
+          "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+          "targets": [{"expr": "sum(ai_agent_chat_total)", "legendFormat": "chats"}],
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "blue", "value": null}]}}}
+        },
+        {
+          "type": "stat",
+          "title": "Active Requests",
+          "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+          "targets": [{"expr": "sum(ai_agent_active_requests)", "legendFormat": "active"}],
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 10}]}}}
+        },
+        {
+          "type": "stat",
+          "title": "Ollama Errors",
+          "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+          "targets": [{"expr": "sum(ai_agent_ollama_errors_total) or vector(0)", "legendFormat": "errors"}],
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}}
+        },
+        {
+          "type": "timeseries",
+          "title": "Request Rate (req/s)",
+          "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+          "targets": [
+            {"expr": "sum(rate(ai_agent_requests_total[1m])) by (endpoint)", "legendFormat": "{{endpoint}}"}
+          ],
+          "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 15}}}
+        },
+        {
+          "type": "timeseries",
+          "title": "Chat Rate by Type (msg/s)",
+          "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+          "targets": [
+            {"expr": "sum(rate(ai_agent_chat_total[1m])) by (question_type)", "legendFormat": "{{question_type}}"}
+          ],
+          "fieldConfig": {"defaults": {"custom": {"drawStyle": "bars", "fillOpacity": 50}}}
+        },
+        {
+          "type": "timeseries",
+          "title": "Chat Latency p50 / p95 / p99 (seconds)",
+          "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
+          "targets": [
+            {"expr": "histogram_quantile(0.50, sum(rate(ai_agent_chat_duration_seconds_bucket[5m])) by (le, question_type))", "legendFormat": "p50 {{question_type}}"},
+            {"expr": "histogram_quantile(0.95, sum(rate(ai_agent_chat_duration_seconds_bucket[5m])) by (le, question_type))", "legendFormat": "p95 {{question_type}}"},
+            {"expr": "histogram_quantile(0.99, sum(rate(ai_agent_chat_duration_seconds_bucket[5m])) by (le, question_type))", "legendFormat": "p99 {{question_type}}"}
+          ],
+          "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 10}}}
+        },
+        {
+          "type": "timeseries",
+          "title": "HTTP Latency p50 / p95 (seconds)",
+          "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+          "targets": [
+            {"expr": "histogram_quantile(0.50, sum(rate(ai_agent_request_duration_seconds_bucket[5m])) by (le, endpoint))", "legendFormat": "p50 {{endpoint}}"},
+            {"expr": "histogram_quantile(0.95, sum(rate(ai_agent_request_duration_seconds_bucket[5m])) by (le, endpoint))", "legendFormat": "p95 {{endpoint}}"}
+          ],
+          "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 10}}}
+        },
+        {
+          "type": "timeseries",
+          "title": "Ollama Errors Over Time",
+          "gridPos": {"x": 0, "y": 20, "w": 12, "h": 6},
+          "targets": [
+            {"expr": "sum(rate(ai_agent_ollama_errors_total[5m])) by (error_type)", "legendFormat": "{{error_type}}"}
+          ],
+          "fieldConfig": {"defaults": {"custom": {"drawStyle": "bars", "fillOpacity": 80}, "color": {"mode": "palette-classic"}}}
+        },
+        {
+          "type": "table",
+          "title": "Request Breakdown",
+          "gridPos": {"x": 12, "y": 20, "w": 12, "h": 6},
+          "targets": [
+            {"expr": "sum by (method, endpoint, status) (ai_agent_requests_total)", "legendFormat": "{{method}} {{endpoint}} {{status}}", "format": "table", "instant": true}
+          ],
+          "transformations": [{"id": "organize", "options": {"excludeByName": {"Time": true}}}]
+        }
+      ],
+      "templating": {"list": []}
+    }
+  ai-agent-ollama.json: |
+    {
+      "uid": "ai-agent-ollama",
+      "title": "AI Agent - Ollama Performance",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "15s",
+      "time": {"from": "now-1h", "to": "now"},
+      "panels": [
+        {
+          "type": "stat",
+          "title": "Chat Latency (avg, last 5m)",
+          "gridPos": {"x": 0, "y": 0, "w": 8, "h": 5},
+          "targets": [{"expr": "sum(rate(ai_agent_chat_duration_seconds_sum[5m])) / sum(rate(ai_agent_chat_duration_seconds_count[5m]))", "legendFormat": "avg"}],
+          "fieldConfig": {"defaults": {"unit": "s", "color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10}, {"color": "red", "value": 30}]}}}
+        },
+        {
+          "type": "stat",
+          "title": "Timeout Errors",
+          "gridPos": {"x": 8, "y": 0, "w": 8, "h": 5},
+          "targets": [{"expr": "sum(ai_agent_ollama_errors_total{error_type=\"timeout\"}) or vector(0)", "legendFormat": "timeouts"}],
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1}, {"color": "red", "value": 5}]}}}
+        },
+        {
+          "type": "stat",
+          "title": "Connection Errors",
+          "gridPos": {"x": 16, "y": 0, "w": 8, "h": 5},
+          "targets": [{"expr": "sum(ai_agent_ollama_errors_total{error_type=\"connection\"}) or vector(0)", "legendFormat": "conn errors"}],
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}}
+        },
+        {
+          "type": "timeseries",
+          "title": "Chat Duration by Model",
+          "gridPos": {"x": 0, "y": 5, "w": 24, "h": 9},
+          "targets": [
+            {"expr": "histogram_quantile(0.50, sum(rate(ai_agent_chat_duration_seconds_bucket[5m])) by (le, model))", "legendFormat": "p50 {{model}}"},
+            {"expr": "histogram_quantile(0.95, sum(rate(ai_agent_chat_duration_seconds_bucket[5m])) by (le, model))", "legendFormat": "p95 {{model}}"},
+            {"expr": "histogram_quantile(0.99, sum(rate(ai_agent_chat_duration_seconds_bucket[5m])) by (le, model))", "legendFormat": "p99 {{model}}"}
+          ],
+          "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 10, "pointSize": 5, "showPoints": "auto"}}}
+        },
+        {
+          "type": "timeseries",
+          "title": "Chat Throughput by Question Type",
+          "gridPos": {"x": 0, "y": 14, "w": 12, "h": 8},
+          "targets": [
+            {"expr": "sum(rate(ai_agent_chat_total[1m])) by (question_type)", "legendFormat": "{{question_type}}"}
+          ],
+          "fieldConfig": {"defaults": {"custom": {"drawStyle": "bars", "fillOpacity": 60}}}
+        },
+        {
+          "type": "timeseries",
+          "title": "Active In-Flight Requests",
+          "gridPos": {"x": 12, "y": 14, "w": 12, "h": 8},
+          "targets": [
+            {"expr": "ai_agent_active_requests", "legendFormat": "{{instance}}"}
+          ],
+          "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 20}}}
+        }
+      ],
+      "templating": {"list": []}
+    }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: ai-agent
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+      - name: grafana
+        image: grafana/grafana:11.0.0
+        ports:
+        - name: http
+          containerPort: 3000
+        env:
+        - name: GF_SECURITY_ADMIN_USER
+          value: admin
+        - name: GF_SECURITY_ADMIN_PASSWORD
+          value: admin
+        - name: GF_USERS_ALLOW_SIGN_UP
+          value: "false"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 300m
+            memory: 256Mi
+        volumeMounts:
+        - name: datasources
+          mountPath: /etc/grafana/provisioning/datasources
+        - name: dashboard-provider
+          mountPath: /etc/grafana/provisioning/dashboards/dashboard-provider.yml
+          subPath: dashboard-provider.yml
+        - name: dashboards
+          mountPath: /var/lib/grafana/dashboards
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: datasources
+        configMap:
+          name: grafana-datasources
+      - name: dashboard-provider
+        configMap:
+          name: grafana-dashboard-provider
+      - name: dashboards
+        configMap:
+          name: grafana-dashboards
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: ai-agent
+  labels:
+    app: grafana
+spec:
+  type: NodePort
+  ports:
+  - name: http
+    port: 3000
+    targetPort: 3000
+    nodePort: 30300
+  selector:
+    app: grafana
