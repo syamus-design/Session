@@ -1,3 +1,10 @@
+# Docker Compose configuration for local development
+# This is an EXAMPLE file. Copy it to docker-compose.yml and update the secrets!
+#
+# Usage:
+#   cp docker-compose.example.yml docker-compose.yml
+#   # Edit docker-compose.yml and replace placeholder values
+#   docker-compose up
 
 services:
   ai-agent:
@@ -9,17 +16,17 @@ services:
       - "8000:8000"
     environment:
       - PORT=8000
-      - LLM_PROVIDER=ollama
-      - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=llama2
+      - LLM_PROVIDER=mock
       - AWS_REGION=us-east-1
       - LOG_LEVEL=INFO
       - ENVIRONMENT=development
       - PYTHONUNBUFFERED=1
       # Splunk HTTP Event Collector (HEC)
       - SPLUNK_HEC_URL=https://splunk:8088
-      - SPLUNK_HEC_TOKEN=1ae86e64-87f7-4011-b97f-74bf2621bfb7
+      - SPLUNK_HEC_TOKEN=<REPLACE-WITH-YOUR-HEC-TOKEN>
       - SPLUNK_HEC_INDEX=main
+      - SPLUNK_HEC_SOURCE=ai-agent
+      - SPLUNK_HEC_SOURCETYPE=_json
     volumes:
       - ./app:/app
     healthcheck:
@@ -29,17 +36,13 @@ services:
       retries: 3
       start_period: 10s
     restart: on-failure
-    # logging driver removed – application will forward logs to Splunk
-    # using its own HTTP handler if SPLUNK_HEC_URL is set.
     depends_on:
       splunk:
         condition: service_healthy
-      ollama:
-        condition: service_started
     networks:
       - ai-network
 
-  # Optional: Prometheus for metrics
+  # Prometheus for metrics collection
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus-local
@@ -53,7 +56,7 @@ services:
     networks:
       - ai-network
 
-  # Optional: Node Exporter for host/container CPU & memory metrics
+  # Node Exporter for host/container CPU & memory metrics
   node-exporter:
     image: prom/node-exporter:latest
     container_name: node-exporter-local
@@ -63,16 +66,17 @@ services:
     networks:
       - ai-network
 
-  # Optional: simple load generator to create CPU/memory pressure
-  loadgen:
-    image: python:3.11-slim
-    container_name: loadgen-local
-    command: ["python","-u","-c","import time,threading\n\ndef cpu_load():\n    while True:\n        x=0\n        for i in range(1000000):\n            x += i*i\nthreading.Thread(target=cpu_load,daemon=True).start()\nmem=[]\nwhile True:\n    mem.append('x'*1000000)\n    time.sleep(1)"]
-    restart: "no"
-    networks:
-      - ai-network
+  # Load generator for testing (optional, commented out by default)
+  # Uncomment to generate CPU/memory spikes for testing autoscaling
+  # loadgen:
+  #   image: python:3.11-slim
+  #   container_name: loadgen-local
+  #   command: ["python","-u","-c","import time,threading\n\ndef cpu_load():\n    while True:\n        x=0\n        for i in range(1000000):\n            x += i*i\nthreading.Thread(target=cpu_load,daemon=True).start()\nmem=[]\nwhile True:\n    mem.append('x'*1000000)\n    time.sleep(1)"]
+  #   restart: "no"
+  #   networks:
+  #     - ai-network
 
-  # Optional: Splunk for log collection
+  # Splunk for centralized logging
   splunk:
     image: splunk/splunk:latest
     container_name: splunk-local
@@ -80,12 +84,12 @@ services:
     environment:
       - SPLUNK_GENERAL_TERMS=--accept-sgt-current-at-splunk-com
       - SPLUNK_START_ARGS=--accept-license
-      - SPLUNK_PASSWORD=Demouser123
+      - SPLUNK_PASSWORD=<REPLACE-WITH-YOUR-SPLUNK-PASSWORD>
       - SPLUNK_HEC_ENABLE=true
       - SPLUNK_HEC_PORT=8088
     ports:
       - "8001:8000"   # Splunk Web (host 8001 avoids conflict with agent)
-      - "8088:8088"   # HEC
+      - "8088:8088"   # HEC endpoint
     networks:
       - ai-network
     healthcheck:
@@ -94,28 +98,7 @@ services:
       timeout: 5s
       retries: 12
 
-  # Ollama: Local LLM inference engine (llama2, mistral, neural-chat, etc.)
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama-local
-    ports:
-      - "11434:11434"
-    environment:
-      - OLLAMA_HOST=0.0.0.0:11434
-    volumes:
-      - ollama-data:/root/.ollama
-    restart: unless-stopped
-    networks:
-      - ai-network
-    # Uncomment to enable GPU support (requires nvidia-docker)
-    # runtime: nvidia
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # Optional: Grafana for visualization
+  # Grafana for visualization
   grafana:
     image: grafana/grafana:latest
     container_name: grafana-local
@@ -125,7 +108,7 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin
     volumes:
       - grafana-data:/var/lib/grafana
-      # provisioning folder to auto-add Prometheus datasource
+      # Provisioning folder to auto-add Prometheus datasource
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
@@ -135,7 +118,6 @@ services:
 volumes:
   prometheus-data:
   grafana-data:
-  ollama-data:
 
 networks:
   ai-network:

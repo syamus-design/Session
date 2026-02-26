@@ -26,10 +26,10 @@ spec:
         prometheus.io/port: "8000"
         prometheus.io/path: "/metrics"
     spec:
-      # Use Karpenter provisioner
-      nodeSelector:
-        karpenter.sh/capacity-type: on-demand
-        karpenter.sh/provisioner-name: default
+      # Use Karpenter provisioner (AWS EKS only - comment out for local K8s)
+      # nodeSelector:
+      #   karpenter.sh/capacity-type: on-demand
+      #   karpenter.sh/provisioner-name: default
       
       # Pod disruption budget for high availability
       affinity:
@@ -54,8 +54,8 @@ spec:
       
       containers:
       - name: ai-agent
-        image: YOUR_ECR_REGISTRY/ai-agent:latest
-        imagePullPolicy: Always
+        image: ai-agent:latest
+        imagePullPolicy: IfNotPresent
         
         ports:
         - name: http
@@ -66,7 +66,11 @@ spec:
         - name: PORT
           value: "8000"
         - name: LLM_PROVIDER
-          value: "bedrock"
+          value: "ollama"
+        - name: OLLAMA_URL
+          value: "http://ollama:11434"
+        - name: OLLAMA_MODEL
+          value: "phi"
         - name: AWS_REGION
           value: "us-east-1"
         
@@ -100,10 +104,10 @@ spec:
         resources:
           requests:
             cpu: 500m
-            memory: 512Mi
+            memory: 2Gi
           limits:
             cpu: 2000m
-            memory: 2Gi
+            memory: 8Gi
         
         # Security context
         securityContext:

@@ -58,8 +58,11 @@ echo 3) Minikube ^(Full testing - 10 min^)
 echo    - Requires minikube installed
 echo    - Most realistic local environment
 echo.
+echo 4) Destroy ^(Clean up deployments^)
+echo    - Remove all containers, volumes, and resources
+echo.
 
-set /p option="Choose option (1-3): "
+set /p option="Choose option (1-4): "
 
 if "%option%"=="1" (
     echo.
@@ -86,6 +89,30 @@ if "%option%"=="1" (
     echo [OK] Kubernetes is running
     echo.
     
+    REM Build Docker image
+    echo Building Docker image...
+    docker build -t ai-agent:latest .
+    if errorlevel 1 (
+        echo [X] Docker build failed. Check Dockerfile and try again.
+        exit /b 1
+    )
+    echo [OK] Docker image built successfully
+    echo.
+    
+    REM Create namespace
+    echo Creating Kubernetes namespace...
+    kubectl create namespace ai-agent 2>nul
+    echo [OK] Namespace ready
+    echo.
+    
+    REM Create ConfigMap and Secret
+    echo Creating ConfigMap and Secret...
+    kubectl create configmap ai-agent-config -n ai-agent --from-literal=app_name=ai-agent --from-literal=debug=false 2>nul
+    kubectl create secret generic ai-agent-secrets -n ai-agent --from-literal=api_key=dummy-local-key 2>nul
+    echo [OK] ConfigMap and Secret created
+    echo.
+    
+    REM Apply manifests
     echo Deploying to local Kubernetes...
     kubectl apply -f kubernetes/namespace.yaml
     kubectl apply -f kubernetes/configmap.yaml
@@ -97,17 +124,42 @@ if "%option%"=="1" (
     
     echo.
     echo ==========================================
-    echo [OK] Deployment complete!
+    echo [OK] Manifests applied!
     echo ==========================================
     echo.
     
-    echo Waiting for pods to start...
-    timeout /t 30 /nobreak
+    echo Waiting for pods to become ready ^(this may take 30-60 seconds^)...
+    echo.
     
+    REM Check pod status multiple times
+    setlocal enabledelayedexpansion
+    set ATTEMPTS=0
+    :wait_loop
+    set ATTEMPTS=!ATTEMPTS!+1
+    if !ATTEMPTS! gtr 60 (
+        echo [X] Pods failed to start. Check logs:
+        echo kubectl logs -f deployment/ai-agent -n ai-agent
+        exit /b 1
+    )
+    
+    for /f %%A in ('kubectl get pods -n ai-agent --no-headers 2^>nul ^| findstr Running ^| find /c /v ""') do set RUNNING=%%A
+    if "!RUNNING!"=="3" (
+        echo [OK] All 3 pods are running!
+        goto pods_ready
+    )
+    
+    timeout /t 1 /nobreak >nul
+    goto wait_loop
+    
+    :pods_ready
     echo.
-    echo Setting up port forward...
-    echo.
+    echo ==========================================
+    echo [OK] Deployment successful!
     echo [*] API available at: http://localhost:8000
+    echo ==========================================
+    echo.
+    echo Starting port-forward in new window...
+    echo (Keep this window open)
     echo.
     echo Press Ctrl+C to stop
     echo.
@@ -145,8 +197,13 @@ if "%option%"=="1" (
     docker build -t ai-agent:latest .
     
     echo Deploying to Minikube...
+    kubectl create namespace ai-agent 2>nul
+    kubectl create configmap ai-agent-config -n ai-agent --from-literal=app_name=ai-agent --from-literal=debug=false 2>nul
+    kubectl create secret generic ai-agent-secrets -n ai-agent --from-literal=api_key=dummy-local-key 2>nul
+    
     kubectl apply -f kubernetes/namespace.yaml
     kubectl apply -f kubernetes/configmap.yaml
+    kubectl apply -f kubernetes/deployment.yaml
     kubectl apply -f kubernetes/service.yaml
     
     echo.
@@ -155,17 +212,69 @@ if "%option%"=="1" (
     echo ==========================================
     echo.
     
-    echo Waiting for pods to start...
+    echo Waiting for pods to become ready...
     timeout /t 30 /nobreak
     
-    echo.
-    echo Setting up port forward...
     echo.
     echo [*] API available at: http://localhost:8000
     echo Press Ctrl+C to stop
     echo.
     
     kubectl port-forward -n ai-agent svc/ai-agent 8000:80
+) else if "%option%"=="4" (
+    echo.
+    echo ==========================================
+    echo Destroy - Clean up all resources
+    echo ==========================================
+    echo.
+    echo Select what to destroy:
+    echo.
+    echo 1) Docker Compose stack
+    echo 2) Kubernetes namespace ^(ai-agent^)
+    echo 3) Minikube cluster
+    echo 4) All - Docker Compose + K8s + Minikube
+    echo.
+    set /p destroy_option="Choose what to destroy (1-4): "
+    
+    if "!destroy_option!"=="1" (
+        echo.
+        echo [*] Destroying Docker Compose stack...
+        docker-compose down -v
+        echo [OK] Docker Compose stack destroyed!
+    ) else if "!destroy_option!"=="2" (
+        echo.
+        echo [*] Destroying Kubernetes namespace...
+        kubectl delete namespace ai-agent --ignore-not-found=true
+        echo [OK] Kubernetes namespace destroyed!
+    ) else if "!destroy_option!"=="3" (
+        echo.
+        echo [*] Destroying Minikube cluster...
+        minikube delete
+        echo [OK] Minikube cluster destroyed!
+    ) else if "!destroy_option!"=="4" (
+        echo.
+        echo [*] Destroying all resources...
+        
+        echo Removing Docker Compose stack...
+        docker-compose down -v 2>nul
+        echo [OK] Docker Compose stack removed
+        
+        echo Removing Kubernetes namespace...
+        kubectl delete namespace ai-agent --ignore-not-found=true 2>nul
+        echo [OK] Kubernetes namespace removed
+        
+        echo Removing Minikube cluster...
+        minikube delete 2>nul
+        echo [OK] Minikube cluster removed
+        
+        echo.
+        echo ==========================================
+        echo [OK] All resources destroyed!
+        echo ==========================================
+    ) else (
+        echo Invalid option
+        exit /b 1
+    )
 ) else (
     echo Invalid option
     exit /b 1

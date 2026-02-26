@@ -33,6 +33,7 @@ MANIFEST
 htmlcov/
 
 # Docker
+docker-compose.yml         # Don't commit real compose file with secrets
 docker-compose.override.yml
 .dockerignore
 

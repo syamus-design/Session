@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  # Ollama: Local LLM inference engine
+  # Supported models: llama2, mistral, neural-chat, orca-mini, openchat, starling, etc.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama-local
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    volumes:
+      - ollama-data:/root/.ollama
+    restart: unless-stopped
+    networks:
+      - ai-network
+    # Uncomment to enable GPU support (requires nvidia-docker)
+    # runtime: nvidia
+    # environment:
+    #   - NVIDIA_VISIBLE_DEVICES=all
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  ollama-data:
+    driver: local
+
+networks:
+  ai-network:
+    driver: bridge

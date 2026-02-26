@@ -50,8 +50,11 @@ echo "3) Minikube (Full testing - 10 min)"
 echo "   - Requires minikube installed"
 echo "   - Most realistic local environment"
 echo ""
+echo "4) Destroy (Clean up deployments)"
+echo "   - Remove all containers, volumes, and resources"
+echo ""
 
-read -p "Choose option (1-3): " option
+read -p "Choose option (1-4): " option
 
 case $option in
     1)
@@ -85,6 +88,34 @@ case $option in
         echo "✅ Kubernetes is running"
         echo ""
         
+        # Build Docker image
+        echo "Building Docker image..."
+        docker build -t ai-agent:latest .
+        if [ $? -ne 0 ]; then
+            echo "❌ Docker build failed"
+            exit 1
+        fi
+        echo "✅ Docker image built successfully"
+        echo ""
+        
+        # Create namespace
+        echo "Creating Kubernetes namespace..."
+        kubectl create namespace ai-agent 2>/dev/null || true
+        echo "✅ Namespace ready"
+        echo ""
+        
+        # Create ConfigMap and Secret
+        echo "Creating ConfigMap and Secret..."
+        kubectl create configmap ai-agent-config -n ai-agent \
+          --from-literal=app_name=ai-agent \
+          --from-literal=debug=false \
+          2>/dev/null || true
+        kubectl create secret generic ai-agent-secrets -n ai-agent \
+          --from-literal=api_key=dummy-local-key \
+          2>/dev/null || true
+        echo "✅ ConfigMap and Secret created"
+        echo ""
+        
         echo "Deploying to local Kubernetes..."
         kubectl apply -f kubernetes/namespace.yaml
         kubectl apply -f kubernetes/configmap.yaml
@@ -96,19 +127,25 @@ case $option in
         
         echo ""
         echo "=========================================="
-        echo "✅ Deployment complete!"
+        echo "✅ Manifests applied!"
         echo "=========================================="
         echo ""
-        echo "Waiting for pods to start (this may take 30 seconds)..."
+        echo "Waiting for pods to become ready (this may take 30-60 seconds)..."
         kubectl wait --for=condition=ready pod \
             -l app=ai-agent \
             -n ai-agent \
             --timeout=120s 2>/dev/null || true
         
         echo ""
-        echo "Setting up port forward..."
+        echo "✅ All pods are ready!"
         echo ""
+        echo "=========================================="
+        echo "✅ Deployment successful!"
         echo "🚀 API available at: http://localhost:8000"
+        echo "=========================================="
+        echo ""
+        echo "Starting port forward..."
+        echo "(Keep this window open)"
         echo ""
         echo "Press Ctrl+C to stop"
         echo ""
@@ -146,6 +183,14 @@ case $option in
         
         # Deploy
         echo "Deploying to Minikube..."
+        kubectl create namespace ai-agent 2>/dev/null || true
+        kubectl create configmap ai-agent-config -n ai-agent \
+          --from-literal=app_name=ai-agent \
+          --from-literal=debug=false \
+          2>/dev/null || true
+        kubectl create secret generic ai-agent-secrets -n ai-agent \
+          --from-literal=api_key=dummy-local-key \
+          2>/dev/null || true
         kubectl apply -f kubernetes/namespace.yaml
         kubectl apply -f kubernetes/configmap.yaml
         
@@ -216,6 +261,67 @@ EOF
         echo ""
         
         kubectl port-forward -n ai-agent svc/ai-agent 8000:80
+        ;;
+    4)
+        echo ""
+        echo "=========================================="
+        echo "Destroy - Clean up all resources"
+        echo "=========================================="
+        echo ""
+        echo "Select what to destroy:"
+        echo ""
+        echo "1) Docker Compose stack"
+        echo "2) Kubernetes namespace (ai-agent)"
+        echo "3) Minikube cluster"
+        echo "4) All - Docker Compose + K8s + Minikube"
+        echo ""
+        read -p "Choose what to destroy (1-4): " destroy_option
+        
+        case $destroy_option in
+            1)
+                echo ""
+                echo "[*] Destroying Docker Compose stack..."
+                docker-compose down -v
+                echo "✅ Docker Compose stack destroyed!"
+                ;;
+            2)
+                echo ""
+                echo "[*] Destroying Kubernetes namespace..."
+                kubectl delete namespace ai-agent --ignore-not-found=true
+                echo "✅ Kubernetes namespace destroyed!"
+                ;;
+            3)
+                echo ""
+                echo "[*] Destroying Minikube cluster..."
+                minikube delete
+                echo "✅ Minikube cluster destroyed!"
+                ;;
+            4)
+                echo ""
+                echo "[*] Destroying all resources..."
+                
+                echo "Removing Docker Compose stack..."
+                docker-compose down -v 2>/dev/null || true
+                echo "✅ Docker Compose stack removed"
+                
+                echo "Removing Kubernetes namespace..."
+                kubectl delete namespace ai-agent --ignore-not-found=true 2>/dev/null || true
+                echo "✅ Kubernetes namespace removed"
+                
+                echo "Removing Minikube cluster..."
+                minikube delete 2>/dev/null || true
+                echo "✅ Minikube cluster removed"
+                
+                echo ""
+                echo "=========================================="
+                echo "✅ All resources destroyed!"
+                echo "=========================================="
+                ;;
+            *)
+                echo "Invalid option"
+                exit 1
+                ;;
+        esac
         ;;
     *)
         echo "Invalid option"

@@ -68,11 +68,112 @@ docker stats ai-agent-local
 docker-compose ps
 ```
 
+### Splunk Logging
+
+Want to stream container logs into a local Splunk instance?
+The compose stack includes an optional `splunk` service running Splunk
+Enterprise with the HTTP Event Collector enabled. The service is
+configured to restart automatically if it crashes (`restart: unless-stopped`)
+and the status may show `Error` briefly while it's booting—use
+`docker-compose logs -f splunk-local` to view what went wrong.
+
+> **Note**: Docker's `depends_on` ensures Splunk container is started
+> before `ai-agent`, but the HEC endpoint may not be ready immediately.
+> The Splunk logging driver is executed by the Docker daemon (on the host),
+> so it must resolve the endpoint from the host network. On Linux `localhost`
+> works; on macOS/Windows use `host.docker.internal` instead (the compose file
+> already sets this). Example:
+> ```bash
+> docker-compose up splunk
+> # wait until "HEC listening" appears in splunk logs
+> docker-compose up ai-agent
+> ```
+
+1. Start the stack:
+   ```bash
+   docker-compose up
+   ```
+2. Open Splunk Web at http://localhost:8001 (note changed port).  
+   **Username**: `admin`  
+   **Password**: `changeme` (set in compose file via `SPLUNK_PASSWORD` env var)
+   
+   > You can modify these by editing `SPLUNK_PASSWORD` in `docker-compose.yml` or
+   > create additional users within Splunk’s **Settings → Access Controls**.
+   > 
+   > **Forgot the password?** Stop the stack, change `SPLUNK_PASSWORD`, then
+   > restart Splunk. Example:
+   > ```bash
+   > docker-compose down
+   > # edit docker-compose.yml SPLUNK_PASSWORD
+   > docker-compose up splunk
+   > ```
+   > Once Splunk is running you can also reset the `admin` password from a
+   > shell:
+   > ```bash
+   > docker exec -it splunk-local \
+   >   /opt/splunk/bin/splunk edit user admin \
+   >   -password NEWPASS -role admin -auth admin:OLDPASS
+   > ```
+3. Navigate to **Settings → Data Inputs → HTTP Event Collector**.
+   If you don’t see a token named `changeme`, you must create one.
+   Use the UI or CLI inside the Splunk container:
+   ```bash
+   docker exec -it splunk-local \
+     /opt/splunk/bin/splunk http-event-collector create agent \
+     -token changeme -index main -auth admin:Demouser123
+   ```
+   Once created, ensure `SPLUNK_HEC_TOKEN` in `docker-compose.yml` matches
+   the token value.
+   You can also set `SPLUNK_HEC_SOURCE` if you prefer a custom source
+   (e.g. `http:agent`) or `SPLUNK_HEC_SOURCETYPE` for something other
+   than `_json`.
+4. Logs from the agent are sent to the **main** index by default.  You
+   can change that by setting `splunk-index` in the `logging.options`
+   section of the compose file or by creating a new index in Splunk.
+
+   **To verify HEC is receiving events:**
+   ```spl
+   | rest /services/collector/health
+   ```
+   should return `"isHealthy": true`.
+
+   You can also test with curl:
+   ```bash
+   curl -k "http://localhost:8001:8088/services/collector/event/1.0" \
+     -H "Authorization: Splunk changeme" \
+     -d '{"event":"test"}'
+   ```
+
+   **If you still see nothing:**
+   - Confirm the `main` index exists in Splunk (Settings → Indexes).
+   - Make sure the time picker covers "All time" or the period since the
+     container started.
+   - You can also run a bare query to verify HEC reception:
+     ```spl
+     index=main | stats count by host, sourcetype
+     ```
+4. The `ai-agent` container already uses the Docker Splunk logging
+   driver pointing at `http://splunk:8088` with that token, so its
+   stdout/ stderr will appear in Splunk automatically.
+
+You can also send application‑level events via HTTP using
+`SPLUNK_HEC_URL`/`SPLUNK_HEC_TOKEN` environment variables.
+
 ### Access Services
 
 - **API**: http://localhost:8000
 - **Prometheus**: http://localhost:9090
 - **Grafana**: http://localhost:3000 (admin/admin)
+
+> **Grafana datasource note**
+> Grafana runs in its own container, so `localhost` inside Grafana refers to the Grafana container itself. If you try to configure the datasource as `http://localhost:9090` you'll get connection refused. The compose file now provisions a default datasource pointing at `http://prometheus:9090` (the service name on the Docker network).
+> 
+> To verify or change manually:
+> 1. Log in to Grafana.
+> 2. Navigate to **Configuration → Data Sources**.
+> 3. Ensure the Prometheus URL is `http://prometheus:9090`.
+> 4. Save & test connection.
+
 
 ### Development Workflow
 
